@@ -1,6 +1,9 @@
 package main
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+)
 
 func UpdateUserTokens(accessToken, refreshToken string, userId uuid.UUID) error {
 	_, err := db.Exec(`
@@ -33,7 +36,7 @@ func GetUserByProviderId(providerUserId string) (User, error) {
 		&user.Role, &user.Terms)
 
 	if err != nil {
-		logger.Error("Error on get user by Provider")
+		logger.Error("Error on get user by Provider", zap.Error(err))
 		return User{}, err
 	}
 
@@ -54,10 +57,33 @@ func GetUserByUserId(userId uuid.UUID) (User, error) {
 		&user.Role, &user.Terms)
 
 	if err != nil {
-		logger.Error("Error on get user by Provider")
+		logger.Error("Error on get user by Provider", zap.Error(err))
 		return User{}, err
 	}
 
 	return user, nil
+}
+
+func CreateUserOrUpdateProviderTokens(user User) error {
+	_, err := db.Exec(`
+		INSERT INTO users (id, provider, provider_user_id, nickname,
+			email, avatar_url, provider_access_token,
+			provider_refresh_token, updated_at, status, "role", terms_accepted) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (provider_user_id) DO UPDATE SET 
+			provider_access_token = $7,
+			provider_refresh_token = $8,
+			updated_at = NOW();`,
+	user.ID, user.Provider, user.ProviderUserID,
+	user.NickName, user.Email, user.ImgURL,
+	user.ProviderAccessToken, user.ProviderRefreshToken,
+	nil, user.Status, user.Role, user.Terms)
+
+	if err != nil {
+		logger.Error("Error on create user or update provider", zap.Error(err))
+		return err
+	}
+
+	return nil
 }
 

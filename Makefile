@@ -3,7 +3,11 @@ SRC := 	main.go \
 		database.go \
 		githubProvider.go \
 		tokens.go \
-		middlewares.go
+		middlewares.go \
+		authRepository.go \
+		authService.go \
+		authHandlers.go \
+		userModel.go
 
 all:
 	go run $(SRC)

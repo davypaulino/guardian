@@ -14,6 +14,10 @@ type ProviderIndex struct {
 	ProvidersMap map[string]string
 }
 
+var UserAccount = map[string]func(goth.User) User{
+    "github": NewGithubUser,
+}
+
 var providerIndex = func () *ProviderIndex {
 	goth.UseProviders(
 		github.New(os.Getenv("AUTH_GITHUB_KEY"), os.Getenv("AUTH_GITHUB_SECRET"), "http://localhost:3001/auth/github/callback"),
