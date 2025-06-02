@@ -4,15 +4,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"html/template"
+	"io"
 	"log"
 	"net/http"
+	"os"
 
+	"github.com/google/uuid"
 	"github.com/markbates/goth"
 	"github.com/markbates/goth/gothic"
+	"go.uber.org/zap"
 )
 
 var db *sql.DB
+
+var logger *zap.Logger
+
+func initLogger() {
+    logger, _ = zap.NewProduction()
+    defer logger.Sync()
+}
 
 var UserAccount = map[string]func(goth.User) User{
     "github": NewGithubUser,
@@ -35,8 +45,8 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	_, err = db.Exec(`
 		INSERT INTO users (id, provider, provider_user_id, nickname,
 			email, avatar_url, provider_access_token,
-			provider_refresh_token, updated_at, status, "role") 
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			provider_refresh_token, updated_at, status, "role", terms_accepted) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (provider_user_id) DO UPDATE SET 
 			provider_access_token = $7,
 			provider_refresh_token = $8,
@@ -44,7 +54,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		newUser.ID, newUser.Provider, newUser.ProviderUserID,
 		newUser.NickName, newUser.Email, newUser.ImgURL,
 		newUser.ProviderAccessToken, newUser.ProviderRefreshToken,
-		nil, newUser.Status, newUser.Role)
+		nil, newUser.Status, newUser.Role, newUser.Terms)
 
 	if err != nil {
 		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
@@ -53,14 +63,14 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = db.QueryRow(`
-        SELECT nickname, email, avatar_url,
+        SELECT id, nickname, email, avatar_url,
 			access_token, refresh_token, status,
-			role
+			role, terms_accepted
         FROM users
         WHERE provider_user_id = $1`,
-		newUser.ProviderUserID).Scan(&newUser.NickName, &newUser.Email, &newUser.ImgURL,
+		newUser.ProviderUserID).Scan(&newUser.ID, &newUser.NickName, &newUser.Email, &newUser.ImgURL,
         	&newUser.AccessToken, &newUser.RefreshToken, &newUser.Status,
-			&newUser.Role)
+			&newUser.Role, &newUser.Terms)
 
 	token, refresh, _ := GenerateTokens(newUser)
 	newUser.AccessToken = &token
@@ -93,50 +103,112 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
-func getUserInfo(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+type UserRequest struct {
+    ID        	uuid.UUID 	`json:"userId"`
+    Nickname  	string 		`json:"nickname"`
+    AvatarURL 	string 		`json:"avatar_url"`
+	Terms		bool		`json:"terms_accepted"`
+}
+
+func postUserRegister(w http.ResponseWriter, r *http.Request) {
+	correlationId := r.Header.Get("X-Correlation-Id")
+	method := "postUserRegister"
+
+	if r.Method == http.MethodOptions {
+		logger.Info("Starting Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
+		defer logger.Info("Finished Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
 	
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method == http.MethodPut {
+		logger.Info("Starting Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
+		defer logger.Info("Finished Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
+	
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			logger.Warn("Error on Read Body", zap.String("method", method), zap.Error(err))
+			http.Error(w, "Erro ao ler o corpo da requisição", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+		
+		var user UserRequest
+		err = json.Unmarshal(body, &user)
+		if err != nil {
+			logger.Warn("Error on Convert Body", zap.String("method", method), zap.Error(err))
+			http.Error(w, "Erro ao decodificar JSON", http.StatusBadRequest)
+			return
+		}
+		
+		if !user.Terms {
+			logger.Warn("Error Terms no assign", zap.String("method", method), zap.Error(err))
+			http.Error(w, "Termos não aceitos", http.StatusBadRequest)
+			return
+		}
+		
+		query := `UPDATE users 
+			SET nickname = $1,
+				avatar_url = $2,
+				terms_accepted = $3,
+				status = $4,
+				updated_at = NOW()
+			WHERE id = $5`
+		_, err = db.Exec(query, &user.Nickname, &user.AvatarURL, &user.Terms, Active, &user.ID)
+		
+		if err != nil {
+			logger.Error("Error on Update User", zap.String("method", method), zap.Error(err))
+			http.Error(w, "Erro ao atualizar usuário no banco", http.StatusInternalServerError)
+			log.Println("Erro SQL:", err)
+			return
+		}
+	
+		// Resposta de sucesso
+		w.Header().Set("Content-Type", "application/json")
+		// w.Header().Set("Authorization", )
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Usuário atualizado com sucesso"})
+	}
+}
+
+func getUserInfo(w http.ResponseWriter, r *http.Request) {
+	correlationId := r.Header.Get("X-Correlation-Id")
+	userId := r.URL.Query().Get("userId")
+	logger.Info("Starting | Get User Info", zap.String("userId", userId), zap.String("correlation_id", correlationId))
+	defer logger.Info("Finished | Get User Info", zap.String("correlation_id", correlationId))
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	
-	// Extract token from request
-	authHeader := r.Header.Get("Authorization")
-	fmt.Printf("%+v", r.Header)
-	fmt.Printf("Token: %s", authHeader)
-	if authHeader == "" {
-		http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
+	var user struct {
+		ID			string	`json:"id"`
+		Name      	string 	`json:"nickname"`
+		Terms     	string 	`json:"accepted_terms"`
+		AvatarURL 	string 	`json:"img_url"`
+	}
+	user.ID = userId
+	if userId == "" || userId == "undefined" {
+		logger.Warn("User Id Param not found.")
+		http.Error(w, "Not found User Id query param", http.StatusBadRequest)
 		return
 	}
-	token := authHeader[len("Bearer "):]
-
-	// Fetch user from the database using access token
-	var user struct {
-		ID        string `json:"id"`
-		Name      string `json:"nickname"`
-		Email     string `json:"email"`
-		AvatarURL string `json:"avatar_url"`
-	}
-
-	fmt.Printf("Token: %s", token)
 
 	err := db.QueryRow(`
-        SELECT id, nickname, email, avatar_url 
-        FROM users WHERE access_token = $1`, token).Scan(&user.ID, &user.Name, &user.Email, &user.AvatarURL)
+        SELECT id, nickname, terms_accepted, avatar_url 
+        FROM users WHERE id = $1`, user.ID).Scan(&user.ID, &user.Name, &user.Terms, &user.AvatarURL)
 	
 	if err == sql.ErrNoRows {
+		logger.Error("Error on db", zap.Error(err))
 		http.Error(w, "User not found or invalid token", http.StatusUnauthorized)
 		return
 	} else if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
-		log.Println("Database query error:", err)
+		logger.Error("Database query error", zap.Error(err), zap.String("correlation_id", correlationId))
 		return
 	}
 
-	// Return user data in JSON format
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
 }
@@ -148,44 +220,33 @@ func logoutHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 func providerAuthHandler(res http.ResponseWriter, req *http.Request) {
-	res.Header().Set("Access-Control-Allow-Origin", "*")
-	res.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS") // Specify allowed HTTP methods
-	res.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
 	// try to get the user without re-authenticating
-	if gothUser, err := gothic.CompleteUserAuth(res, req); err == nil {
-		t, _ := template.New("foo").Parse(userTemplate)
-		t.Execute(res, gothUser)
+	if _, err := gothic.CompleteUserAuth(res, req); err == nil {
+		callbackHandler(res, req)
 	} else {
 		gothic.BeginAuthHandler(res, req)
 	}
 }
 
-var indexTemplate = `{{range $key,$value:=.Providers}}
-    <p><a href="/auth/{{$value}}">Log in with {{index $.ProvidersMap $value}}</a></p>
-{{end}}`
-
-var userTemplate = `
-<p><a href="/logout/{{.Provider}}">logout</a></p>
-<p>Name: {{.Name}} [{{.LastName}}, {{.FirstName}}]</p>
-<p>Email: {{.Email}}</p>
-<p>NickName: {{.NickName}}</p>
-<p>Location: {{.Location}}</p>
-<p>AvatarURL: {{.AvatarURL}} <img src="{{.AvatarURL}}"></p>
-<p>Description: {{.Description}}</p>
-<p>UserID: {{.UserID}}</p>
-<p>AccessToken: {{.AccessToken}}</p>
-<p>ExpiresAt: {{.ExpiresAt}}</p>
-<p>RefreshToken: {{.RefreshToken}}</p>
-`
-
 func main() {
 	Init()
+	initLogger()
+	fmt.Println("SESSION_SECRET:", os.Getenv("SESSION_SECRET"))
 
-	http.HandleFunc("/auth/{provider}/callback", callbackHandler)
-	http.HandleFunc("/logout/{provider}", logoutHandler)
-	http.HandleFunc("/auth/{provider}", providerAuthHandler)
+	http.HandleFunc("/auth/{provider}/callback",
+		configMiddlewares(callbackHandler, corsMiddleware))
+	http.HandleFunc("/logout/{provider}",
+		configMiddlewares(logoutHandler, corsMiddleware))
+	http.HandleFunc("/auth/{provider}",
+		configMiddlewares(providerAuthHandler, corsMiddleware))
 
 	http.HandleFunc("/users/1", getUserInfo)
+	http.HandleFunc("/users", getUserInfo)
+	http.HandleFunc("/register",
+		configMiddlewares(postUserRegister,
+			corsMiddleware,
+			authMiddleware))
 
 	log.Println("listening on localhost:3001")
 	log.Fatal(http.ListenAndServe(":3001", nil))

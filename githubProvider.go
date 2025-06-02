@@ -38,6 +38,7 @@ type User struct {
     ProviderUserID  		string    	`json:"provider_user_id"`
     ProviderAccessToken     string    	`json:"provider_access_token"`
     ProviderRefreshToken    *string   	`json:"provider_refresh_token"`
+	Terms					bool		`json:"terms_accepted"`
 }
 
 func NewGithubUser(user goth.User) User {
@@ -47,6 +48,7 @@ func NewGithubUser(user goth.User) User {
 			nickName = n
 		}
 	}
+	
 	if (nickName == "") {
 		if n, ok := user.RawData["twitter_username"].(string); ok {
 			nickName = n;
@@ -82,6 +84,7 @@ func NewGithubUser(user goth.User) User {
 		ProviderRefreshToken: &user.RefreshToken,
 		Status: Pending,
 		Role: NormalUser,
+		Terms: false,
 	}
 	return newUser
 }
