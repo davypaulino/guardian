@@ -17,4 +17,5 @@ CREATE TABLE users (
     terms_accepted BOOLEAN NOT NULL
 );
 
-DROP TABLE users CASCADE;
+
+DELETE FROM users;

@@ -30,6 +30,11 @@ type UserRequest struct {
 	Terms		bool		`json:"terms_accepted"`
 }
 
+type UserTokenResponse struct {
+	AccessToken 	string 	`json:"access_token"`
+	RefreshToken 	string 	`json:"refresh_token"`
+}
+
 func postUserRegister(w http.ResponseWriter, r *http.Request) {
 	correlationId := r.Header.Get("X-Correlation-Id")
 	method := "postUserRegister"
@@ -67,28 +72,28 @@ func postUserRegister(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Termos não aceitos", http.StatusBadRequest)
 			return
 		}
-		
-		query := `UPDATE users 
-			SET nickname = $1,
-				avatar_url = $2,
-				terms_accepted = $3,
-				status = $4,
-				updated_at = NOW()
-			WHERE id = $5`
-		_, err = db.Exec(query, &user.Nickname, &user.AvatarURL, &user.Terms, Active, &user.ID)
-		
+
+		newUser, err := GetUserByUserId(user.ID)
+		newUser.NickName = user.Nickname
+		newUser.ImgURL = user.AvatarURL
+		newUser.Terms = user.Terms
+		newUser.Status = Active
+
+		token, refresh, err := GenerateTokens(newUser)
 		if err != nil {
-			logger.Error("Error on Update User", zap.String("method", method), zap.Error(err))
-			http.Error(w, "Erro ao atualizar usuário no banco", http.StatusInternalServerError)
-			log.Println("Erro SQL:", err)
+			logger.Error("Error on Generate Tokens", zap.String("method", method), zap.Error(err))
+			http.Error(w, "Erro ao gerar tokens", http.StatusInternalServerError)
 			return
 		}
+
+		response := UserTokenResponse{
+			AccessToken:  token,
+			RefreshToken: refresh,
+		}
 	
-		// Resposta de sucesso
 		w.Header().Set("Content-Type", "application/json")
-		// w.Header().Set("Authorization", )
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Usuário atualizado com sucesso"})
+		json.NewEncoder(w).Encode(response)
 	}
 }
 

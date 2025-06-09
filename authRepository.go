@@ -87,3 +87,36 @@ func CreateUserOrUpdateProviderTokens(user User) error {
 	return nil
 }
 
+func UpdateUserRegister(user User) (string, string, error) {
+	
+	token, refresh, err := GenerateTokens(user)
+	if err != nil {
+		logger.Error("Error on Generate Tokens", zap.Error(err))
+		return "", "", err
+	}
+
+	_, err = db.Exec(`
+		UPDATE users SET 
+			nickname = $1,
+			avatar_url = $2,
+			terms_accepted = $3,
+			status = $4,
+			access_token = $5,
+			refresh_token = $6,
+			updated_at = NOW()
+		WHERE id = $7`,
+		&user.NickName,
+		&user.ImgURL,
+		&user.Terms,
+		&user.Status,
+		&token,
+		&refresh,
+		&user.ID)
+
+	if err != nil {
+		logger.Error("Error on Update User", zap.Error(err))
+		return "", "", err
+	}
+
+	return token, refresh, nil
+}
