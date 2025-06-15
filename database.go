@@ -9,7 +9,7 @@ import (
 )
 
 func connectDB() (*sql.DB, error) {
-	db, err := sql.Open("postgres", "user=db_user password=example dbname=guardian_db sslmode=disable")
+	db, err := sql.Open("postgres", environments.DatabaseConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -21,10 +21,12 @@ func connectDB() (*sql.DB, error) {
 	return db, nil
 }
 
-func Init() {
+func initDatabase() (*sql.DB, error) {
 	var err error
 	db, err = connectDB()
 	if err != nil {
 		log.Fatalf("Database initialization error: %v", err)
+		return nil, err
 	}
+	return db, nil
 }
