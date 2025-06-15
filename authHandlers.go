@@ -15,7 +15,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Authentication failed: ", http.StatusUnauthorized)
 		return
 	}
-	
+
 	if user.AccessToken == "" {
 		logger.Error("No Access Token Generated", zap.Error(err))
 		http.Error(w, "No access token received", http.StatusInternalServerError)
@@ -27,7 +27,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error on Create account.", http.StatusInternalServerError)
 		return
 	}
-	
-	redirectURL := fmt.Sprintf("http://localhost:3000/home?token=%s", *newUser.AccessToken)	
+
+	redirectURL := fmt.Sprintf("http://localhost:3000"+"/home?token=%s", *newUser.AccessToken)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }

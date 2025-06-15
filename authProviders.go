@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"sort"
 
 	"github.com/markbates/goth"
@@ -15,13 +14,13 @@ type ProviderIndex struct {
 }
 
 var UserAccount = map[string]func(goth.User) User{
-    "github": NewGithubUser,
+	"github": NewGithubUser,
 }
 
-var providerIndex = func () *ProviderIndex {
+func initProviders() *ProviderIndex {
 	goth.UseProviders(
-		github.New(os.Getenv("AUTH_GITHUB_KEY"), os.Getenv("AUTH_GITHUB_SECRET"), "http://localhost:3001/auth/github/callback"),
-		google.New(os.Getenv("AUTH_GOOGLE_KEY"), os.Getenv("AUTH_GOOGLE_SECRET"), "http://localhost:3001/auth/google/callback"),
+		github.New(environments.Auths.ProviderKeys["github"], environments.Auths.ProviderSecrets["github"], environments.RedirectUrl+"/api/v1/guardian/auth/github/callback"),
+		google.New(environments.Auths.ProviderKeys["google"], environments.Auths.ProviderSecrets["google"], environments.RedirectUrl+"/api/v1/guardian/auth/google/callback"),
 	)
 
 	m := map[string]string{
@@ -35,6 +34,5 @@ var providerIndex = func () *ProviderIndex {
 	}
 	sort.Strings(keys)
 
-	providerIndex := &ProviderIndex{Providers: keys, ProvidersMap: m}
-	return providerIndex
-}()
+	return &ProviderIndex{Providers: keys, ProvidersMap: m}
+}

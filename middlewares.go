@@ -7,19 +7,19 @@ import (
 )
 
 func configMiddlewares(handler http.HandlerFunc, middlewares ...func(http.HandlerFunc) http.HandlerFunc) http.HandlerFunc {
-    for _, middleware := range middlewares {
-        handler = middleware(handler)
-    }
-    return handler
+	for _, middleware := range middlewares {
+		handler = middleware(handler)
+	}
+	return handler
 }
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		correlationId := r.Header.Get("X-Correlation-Id")
 		logger.Info("Starting | Auth ", zap.String("correlation_id", correlationId))
 		defer logger.Info("Finished | Auth ", zap.String("correlation_id", correlationId))
-		
+
 		if authHeader == "" {
 			logger.Warn("Invalid Token", zap.String("token", authHeader), zap.String("correlation_id", correlationId))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -32,7 +32,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if err != nil {
 			logger.Warn("Invalid Token", zap.Error(err), zap.String("correlation_id", correlationId))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return 
+			return
 		}
 
 		id, err := claims.GetSubject()
@@ -49,7 +49,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			role, terms_accepted
 		FROM users
 		WHERE id = $1`,
-		id).Scan(&user.ID, &user.NickName, &user.Email, &user.ImgURL,
+			id).Scan(&user.ID, &user.NickName, &user.Email, &user.ImgURL,
 			&user.AccessToken, &user.RefreshToken, &user.Status,
 			&user.Role, &user.Terms)
 
@@ -65,8 +65,8 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-        next.ServeHTTP(w, r)
-    }
+		next.ServeHTTP(w, r)
+	}
 }
 
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -75,10 +75,10 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		logger.Info("Starting | Cors ", zap.String("correlation_id", correlationId))
 		defer logger.Info("Finished | Cors ", zap.String("correlation_id", correlationId))
 
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Correlation-Id")
-
 		next.ServeHTTP(w, r)
 	}
 }

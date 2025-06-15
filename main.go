@@ -3,36 +3,40 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
+	"go.uber.org/zap"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
+	httptrace "github.com/DataDog/dd-trace-go/contrib/net/http/v2"
+	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 	"github.com/google/uuid"
 	"github.com/markbates/goth/gothic"
-	"go.uber.org/zap"
 )
 
 var db *sql.DB
-
 var logger *zap.Logger
+var environments *Environment
+var providerIndex *ProviderIndex
 
 func initLogger() {
-    logger, _ = zap.NewProduction()
-    defer logger.Sync()
+	logger, _ = zap.NewProduction()
+	defer logger.Sync()
 }
 
 type UserRequest struct {
-    ID        	uuid.UUID 	`json:"userId"`
-    Nickname  	string 		`json:"nickname"`
-    AvatarURL 	string 		`json:"avatar_url"`
-	Terms		bool		`json:"terms_accepted"`
+	ID        uuid.UUID `json:"userId"`
+	Nickname  string    `json:"nickname"`
+	AvatarURL string    `json:"avatar_url"`
+	Terms     bool      `json:"terms_accepted"`
 }
 
 type UserTokenResponse struct {
-	AccessToken 	string 	`json:"access_token"`
-	RefreshToken 	string 	`json:"refresh_token"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 func postUserRegister(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +46,7 @@ func postUserRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		logger.Info("Starting Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
 		defer logger.Info("Finished Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
-	
+
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -50,7 +54,7 @@ func postUserRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPut {
 		logger.Info("Starting Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
 		defer logger.Info("Finished Process", zap.String("http:method", r.Method), zap.String("method", method), zap.String("correlation_id", correlationId))
-	
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			logger.Warn("Error on Read Body", zap.String("method", method), zap.Error(err))
@@ -58,7 +62,7 @@ func postUserRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer r.Body.Close()
-		
+
 		var user UserRequest
 		err = json.Unmarshal(body, &user)
 		if err != nil {
@@ -66,7 +70,7 @@ func postUserRegister(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Erro ao decodificar JSON", http.StatusBadRequest)
 			return
 		}
-		
+
 		if !user.Terms {
 			logger.Warn("Error Terms no assign", zap.String("method", method), zap.Error(err))
 			http.Error(w, "Termos não aceitos", http.StatusBadRequest)
@@ -79,7 +83,7 @@ func postUserRegister(w http.ResponseWriter, r *http.Request) {
 		newUser.Terms = user.Terms
 		newUser.Status = Active
 
-		token, refresh, err := GenerateTokens(newUser)
+		token, refresh, err := UpdateUserRegister(newUser)
 		if err != nil {
 			logger.Error("Error on Generate Tokens", zap.String("method", method), zap.Error(err))
 			http.Error(w, "Erro ao gerar tokens", http.StatusInternalServerError)
@@ -90,7 +94,7 @@ func postUserRegister(w http.ResponseWriter, r *http.Request) {
 			AccessToken:  token,
 			RefreshToken: refresh,
 		}
-	
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(response)
@@ -106,12 +110,12 @@ func getUserInfo(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	
+
 	var user struct {
-		ID			string	`json:"id"`
-		Name      	string 	`json:"nickname"`
-		Terms     	string 	`json:"accepted_terms"`
-		AvatarURL 	string 	`json:"img_url"`
+		ID        string `json:"id"`
+		Name      string `json:"nickname"`
+		Terms     string `json:"accepted_terms"`
+		AvatarURL string `json:"img_url"`
 	}
 	user.ID = userId
 	if userId == "" || userId == "undefined" {
@@ -123,7 +127,7 @@ func getUserInfo(w http.ResponseWriter, r *http.Request) {
 	err := db.QueryRow(`
         SELECT id, nickname, terms_accepted, avatar_url 
         FROM users WHERE id = $1`, user.ID).Scan(&user.ID, &user.Name, &user.Terms, &user.AvatarURL)
-	
+
 	if err == sql.ErrNoRows {
 		logger.Error("Error on db", zap.Error(err))
 		http.Error(w, "User not found or invalid token", http.StatusUnauthorized)
@@ -155,24 +159,44 @@ func providerAuthHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
-	Init()
 	initLogger()
-	fmt.Println("SESSION_SECRET:", os.Getenv("SESSION_SECRET"))
+	environments = initEnvironments()
+	tracer.Start(
+		tracer.WithEnv(environments.DatadogSettings.ServiceEnvironment),
+		tracer.WithService(environments.DatadogSettings.ServiceName),
+		tracer.WithHostname(environments.DatadogSettings.AgentHost),
+		tracer.WithServiceVersion(environments.DatadogSettings.Version),
+		tracer.WithAgentURL(environments.DatadogSettings.TraceAgentHostname),
+		tracer.WithGlobalTag("team", "pung-guardian"),
+	)
 
-	http.HandleFunc("/auth/{provider}/callback",
+	defer tracer.Stop()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		tracer.Stop()
+	}()
+
+	db, _ = initDatabase()
+	providerIndex = initProviders()
+
+	prefix := "/api/v1/guardian"
+
+	apiMux := httptrace.NewServeMux(httptrace.WithService("pung-guardian"))
+	apiMux.HandleFunc(prefix+"/auth/{provider}/callback",
 		configMiddlewares(callbackHandler, corsMiddleware))
-	http.HandleFunc("/logout/{provider}",
+	apiMux.HandleFunc(prefix+"/logout/{provider}",
 		configMiddlewares(logoutHandler, corsMiddleware))
-	http.HandleFunc("/auth/{provider}",
+	apiMux.HandleFunc(prefix+"/auth/{provider}",
 		configMiddlewares(providerAuthHandler, corsMiddleware))
-
-	http.HandleFunc("/users/1", getUserInfo)
-	http.HandleFunc("/users", getUserInfo)
-	http.HandleFunc("/register",
+	apiMux.HandleFunc(prefix+"/users/1", getUserInfo)
+	apiMux.HandleFunc(prefix+"/users", getUserInfo)
+	apiMux.HandleFunc(prefix+"/register",
 		configMiddlewares(postUserRegister,
 			corsMiddleware,
 			authMiddleware))
 
-	log.Println("listening on localhost:3001")
-	log.Fatal(http.ListenAndServe(":3001", nil))
+	logger.Info("Starting server", zap.String("port", environments.ServerPort))
+	log.Fatal(http.ListenAndServe(":"+environments.ServerPort, apiMux))
 }
