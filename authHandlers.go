@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/markbates/goth/gothic"
 	"go.uber.org/zap"
@@ -28,6 +29,23 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURL := fmt.Sprintf("http://localhost:3000"+"/home?token=%s", *newUser.AccessToken)
+	callbackQueryParams := r.URL.Query()
+	stateFromCallback := callbackQueryParams.Get("state")
+
+	gClientsSessions.Lock()
+	sessionData, found := gClientsSessions.data[stateFromCallback]
+	if !found || time.Now().After(sessionData.ExpiresAt) {
+		gClientsSessions.Unlock()
+		logger.Error("Callback session state not found or expired.", zap.String("state", stateFromCallback))
+		http.Error(w, "Authentication session expired or invalid.", http.StatusUnauthorized)
+		return
+	}
+	delete(gClientsSessions.data, stateFromCallback)
+	gClientsSessions.Unlock()
+
+	redirectURL := fmt.Sprintf("%shome?access_token=%s&refresh_token=%s",
+		sessionData.RedirectURL, *newUser.AccessToken, *newUser.RefreshToken)
+
+	logger.Info("Redirect to", zap.String("redirectURL", sessionData.RedirectURL))
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
