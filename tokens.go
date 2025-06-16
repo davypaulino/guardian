@@ -3,14 +3,10 @@ package main
 import (
 	"fmt"
 	"github.com/google/uuid"
-	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
-
-var secretKey = []byte(os.Getenv("ACCESS_TOKEN_SECRET"))
-var refreshSecretKey = []byte("REFRESH_TOKEN_SECRET")
 
 func GenerateTokens(user User) (string, string, error) {
 
@@ -25,7 +21,7 @@ func GenerateTokens(user User) (string, string, error) {
 		"token_type": "access",
 	}
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	signedAccessToken, err := accessToken.SignedString(secretKey)
+	signedAccessToken, err := accessToken.SignedString([]byte(environments.AccessTokenSecret))
 	if err != nil {
 		return "", "", err
 	}
@@ -38,8 +34,7 @@ func GenerateTokens(user User) (string, string, error) {
 		"token_type": "refresh",
 	}
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	signedRefreshToken, err := refreshToken.SignedString(refreshSecretKey)
-
+	signedRefreshToken, err := refreshToken.SignedString([]byte(environments.RefreshTokenSecret))
 	if err != nil {
 		return "", "", err
 	}
@@ -55,13 +50,19 @@ const (
 )
 
 func ValidateToken(tokenString string, tt TokenType) (*jwt.MapClaims, error) {
-	var secret = secretKey
+	var secret = []byte(environments.AccessTokenSecret)
 	if tt == Refresh {
-		secret = refreshSecretKey
+		secret = []byte(environments.RefreshTokenSecret)
 	}
 
 	if len(secret) == 0 {
 		return nil, fmt.Errorf("missing secret key")
+	}
+
+	parseOptions := []jwt.ParserOption{
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(5 * time.Second),
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}),
 	}
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
@@ -69,7 +70,7 @@ func ValidateToken(tokenString string, tt TokenType) (*jwt.MapClaims, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return secret, nil
-	})
+	}, parseOptions...)
 
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %v", err)
